@@ -1,0 +1,572 @@
+---
+title: "Outliers and Overperformance: A Data-Driven Analysis of NFL Seasons"
+author: "AJ Fong"
+date: "July 2025"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(rvest)
+library(leaps)
+library(car)
+library(polite)
+library(caret)
+library(ggplot2)
+library(MASS)
+library(randomForest)
+```
+
+## Data Collection
+
+For the data collection, I created a Python function that used the Selenium package to scrape live data from the website profootball-reference.com for NFL team stats from 1965-2025. I used this function to create .txt files that I then uploaded into R. With these files, I merged and cleaned the data based off of the year and team names. This allowed for smooth and efficient data extraction and cleaning.
+
+```{r, include = FALSE}
+# === Load data ===
+early_offense <- read.table("early_combined_team_offense_stats.txt", sep = "\n")
+late_offense <- read.table("late_combined_team_offense_stats.txt", sep = "\n")
+early_defense <- read.table("early_combined_team_defense_stats.txt", sep = "\n")
+late_defense <- read.table("late_combined_team_defense_stats.txt", sep = "\n")
+wins_losses <- read.table("wins_losses.txt", sep = "\n")
+ancient_wins_losses <- read.table("ancient_wins_losses.txt", sep = "\n")
+ancient_offense <- read.table("ancient_offense_stats.txt", sep = "\n")
+ancient_defense <- read.table("ancient_defense_stats.txt", sep = "\n")
+extinct_wins_losses <- read.table("extinct_wins_losses.txt", sep = "\n")
+
+# === Process win/loss data ===
+wins_losses <- c(extinct_wins_losses, ancient_wins_losses, wins_losses)
+years <- c(rep(1965, each = 14), rep(1966, each = 15), 
+           rep(1967:1969, each = 16), rep(1970:1975, each = 26), 
+           rep(1976:1994, each = 28), rep(1995:1998, each = 30), 
+           rep(1999:2001, each = 31), rep(2002:2024, each = 32))
+
+wins_losses <- unlist(wins_losses)
+wins_losses <- gsub("\\+|\\*", "", wins_losses)
+names <- as.data.frame(wins_losses[seq(1, length(wins_losses), 4)])
+wins_losses <- wins_losses[-seq(1, length(wins_losses), 4)]
+wins_losses <- matrix(as.numeric(wins_losses), ncol = 3, byrow = T)
+wins_losses <- as.data.frame(wins_losses)
+wins_losses <- cbind(years,names, wins_losses)
+
+colnames(wins_losses) <- c("Year", "Tm", "W", "L", "Win_pct")
+wins_losses$Win_pct <- round(wins_losses$W / (wins_losses$L + wins_losses$W),3)
+
+# === Data extract functions ===
+ancient_extract_data <- function(x){
+  revised <- x[x != "Tm"]
+  team_names <- revised[seq(2,length(revised), 25)]
+  team_data <- revised[-seq(2,length(revised), 25)]
+  team_data_matrix <- matrix(as.numeric(team_data), ncol = 24, byrow = T)
+  team_names <- as.data.frame(team_names)
+  team_data_df <- as.data.frame(team_data_matrix)
+  result <- cbind(team_names, team_data_df)
+  result$na_val1 <- NA
+  result$na_val2 <- NA
+  result$na_val3 <- NA
+  return(result)
+  }
+
+early_extract_data <- function(x){
+  revised <- x[x != "Tm"]
+  team_names <- revised[seq(2,length(revised), 27)]
+  team_data <- revised[-seq(2,length(revised), 27)]
+  team_data_matrix <- matrix(as.numeric(team_data), ncol = 26, byrow = T)
+  team_names <- as.data.frame(team_names)
+  team_data_df <- as.data.frame(team_data_matrix)
+  result <- cbind(team_names, team_data_df)
+  result$na_val <- NA
+  return(result)
+  }
+
+late_extract_data <- function(x){
+  revised <- x[x != "Tm"]
+  team_names <- revised[seq(2,length(revised), 28)]
+  team_data <- revised[-seq(2,length(revised), 28)]
+  team_data_matrix <- matrix(as.numeric(team_data), ncol = 27, byrow = T)
+  team_names <- as.data.frame(team_names)
+  team_data_df <- as.data.frame(team_data_matrix)
+  result <- cbind(team_names, team_data_df)
+  return(result)
+}
+
+# === Clean each dataset ===
+ancient_offense_cleaned <- ancient_extract_data(ancient_offense)
+ancient_defense_cleaned <- ancient_extract_data(ancient_defense)
+early_offense_cleaned <- early_extract_data(early_offense)
+early_defense_cleaned <- early_extract_data(early_defense)
+late_offense_cleaned <- late_extract_data(late_offense)
+late_defense_cleaned <- late_extract_data(late_defense)
+
+# === Define headers ===
+offense_header <- c("Tm", "Rk", "G", "Pf", "Total Yds", "Total Ply", "Y/P", 
+                    "TO", "FL", "Total 1stD", "Cmp",
+                    "Pass Att", "Pass Yds", "Pass TD", "Int", "NY/A", 
+                    "Pass 1stD", "Rush Att", "Rush Yds", "Rush TD", "Y/A",
+                    "1stD", "Pen", "Pen Yds", "Pen 1stPy", "Sc%", "TO%", "EXP")
+defense_header <- c("Tm", "Rk", "G", "PA", "Total Yds_D", "Total Ply_D", 
+                    "Total Y/P_D", "TO_D", "FL_D", "Total 1stD_D", "Cmp_D",
+                    "Pass Att_D", "Pass Yds_D", "Pass TD_D", "Int_D", "NY/A_D",
+                    "Pass 1stD_D", "Rush Att_D", "Rush Yds_D", "Rush TD_D", 
+                    "Y/A_D","Rush 1stD_D", "Pen_D", "Pen Yds_D", "Pen 1stPy_D", 
+                    "Sc%_D", "TO%_D", "EXP_D")
+
+# === Apply headers ===
+colnames(ancient_offense_cleaned) <- offense_header
+colnames(early_offense_cleaned) <- offense_header
+colnames(late_offense_cleaned) <- offense_header
+colnames(ancient_defense_cleaned) <- defense_header
+colnames(early_defense_cleaned) <- defense_header
+colnames(late_defense_cleaned) <- defense_header
+
+offense_total_stats <- rbind(ancient_offense_cleaned, 
+                             early_offense_cleaned, late_offense_cleaned)
+defense_total_stats <- rbind(ancient_defense_cleaned, 
+                             early_defense_cleaned, late_defense_cleaned)
+defense_total_stats <- defense_total_stats[, -c(2,3)]
+
+offense_total_stats$Year <- years
+defense_total_stats$Year <- years
+
+# === Combine all offense and defense stats ===
+total_stats <- merge(offense_total_stats, defense_total_stats, 
+                     by = c("Year", "Tm"))
+total_stats <- merge(wins_losses, total_stats, by = c("Year", "Tm"))
+
+total_stats_cleaned <- total_stats[,-c(1,2,3,4,6,7,8,19,23,29,44,48,54,33)]
+total_stats_cleaned$Win_pct <- total_stats_cleaned$Win_pct + .001
+
+# === Preview ===
+head(total_stats)
+```
+
+```{r, echo = FALSE}
+head(total_stats[,1:13])
+```
+
+## Creating & Optimizing Linear Models
+
+I initially placed my data into the base R lm function with the response variable being win percentage to create the first model. I then used the summary function to check the significance level of each predictor as well as the $R^2$ and adjusted-$R^2$ values to help determine the fit of the model. I proceeded to use multiple different techniques such as BIC/AIC, VIF, InvResPlot, and BoxCox to optimize and generate the best model. The BIC/AIC methods help in deterimining the optimal amount of predictors through their model selection criteria. VIF is used to determine collinearity between different variables. It tells you how much the variance of a regression coefficient is inflated due to collinearity with other predictors. InvResPlot and BoxCox show whether or not a transformation (log, square root, etc) are useful in helping to more effectively predict the response variable. With these models, I checked the residual plots to determine if all normality conditions are met inside of the model to prevent biasness.
+
+Note: Due to the missing values inside of data from 1968-1999, only 2000-2025 data was used in creating the models.
+
+Another method I used to create a model was the random forest method. Random forest models build many decision trees and combines their results to make a more accurate model. It uses bootstrap sampling and random selection to prevent overfitting and add diversity.
+
+```{r, include = FALSE}
+m1 <- lm(Win_pct ~ ., data = total_stats_cleaned)
+summary(m1)
+vif(m1)
+
+plot(m1)
+
+## BIC
+
+fwd <- regsubsets(Win_pct~. , data = total_stats_cleaned, 
+                  method = "forward", nvmax = ncol(total_stats_cleaned))
+summary(fwd)
+bic <- summary(fwd)$bic
+plot(bic)
+which.min(bic)
+
+m2 <- lm(Win_pct ~ TO + Cmp + `Pass Yds` + `Pass TD` + 
+           `NY/A` + `Rush TD` + `Pen Yds` +
+           `Sc%` + Cmp_D + `Pass Att_D` + `Pass TD_D` + `NY/A_D` + 
+           `Rush Att_D` + Pen_D + `Sc%_D` + `TO%_D`, 
+         data = total_stats_cleaned)
+summary(m2)
+vif(m2)
+
+
+```
+
+```{r, include = FALSE}
+m3 <- lm(Win_pct ~ TO + `Pass TD` + `NY/A` + `Rush TD` + `Pen Yds` +
+           `Sc%` + Cmp_D + `Pass Att_D` + `Pass TD_D` + `NY/A_D` + 
+           `Rush Att_D` + Pen_D + `Sc%_D` + `TO%_D`, 
+         data = total_stats_cleaned)
+
+summary(m3)
+vif(m3)
+invResPlot(m3)
+boxCox(m3)
+
+add_expected_win_pct <- function(df) {
+  # Check that the required variables exist in the new data
+  required_vars <- all(c("TO", "Pass TD", "NY/A", "Rush TD", "Pen Yds", "Sc%", 
+                         "Cmp_D", "Pass Att_D", "Pass TD_D", "NY/A_D", 
+                         "Rush Att_D", "Pen_D", "Sc%_D", "TO%_D") %in% colnames(df))
+  
+  if (!required_vars) {
+    stop("Data frame is missing one or more required predictor columns.")
+  }
+  
+  # Predict expected Win % using your fitted model
+  df$Expected_Win_pct <- predict(m3, newdata = df)
+  
+  return(df)
+}
+
+
+leveragem3 <- hatvalues(m3)
+high_leveragem3 <- 2 * (15/859)
+cdm3 <- cooks.distance(m3)
+model_stdresm3 <- stdres(m3)
+
+# Start from cleaned dataset
+total_stats_m3 <- total_stats
+
+# Add leverage, Cook's D, and standardized residuals
+total_stats_m3$leverage[856:1714] <- round(leveragem3, digits = 6)
+total_stats_m3$CD[856:1714] <- round(cdm3, digits = 6)
+total_stats_m3$StdRes[856:1714] <- round(model_stdresm3, digits = 3)
+
+# Now add the predicted Win %
+total_stats_m3 <- add_expected_win_pct(total_stats_m3)
+total_stats_m3$Expected_Win_pct <- round(total_stats_m3$Expected_Win_pct, digits = 3)
+total_stats_m3$Exp_Wins <- round(total_stats_m3$G * total_stats_m3$Expected_Win_pct, digits = 3)
+total_stats_m3$Win_Diff <- round(total_stats_m3$W - total_stats_m3$Exp_Wins, digits = 3)
+
+total_stats_m3[which(abs(total_stats_m3$StdRes) > 2.5), ]
+total_stats_m3[which(total_stats_m3$Win_Diff > 4 | total_stats_m3$Win_Diff < -4), ]
+plot(m3)
+abline(v = high_leveragem3, lty = 2, col = "blue")
+abline(h = c(-2,2), lty = 2, col = "red")
+```
+
+```{r, include = FALSE}
+## AIC
+
+bwd <- regsubsets(Win_pct~. , data = total_stats_cleaned, 
+                  method = "backward", nvmax = ncol(total_stats_cleaned))
+summary(bwd)
+aic <- summary(bwd)$bic
+plot(aic)
+which.min(aic)
+
+m4 <- lm(Win_pct ~ `Total Ply` + `Y/P` + Cmp + `Pass Att` + 
+           `Pass TD` + `Rush Att` +
+           `Rush TD` + `Pen Yds` + `Sc%` + `Total Ply_D` + 
+           TO_D + Cmp_D + `Pass TD_D` +
+           `Rush Att_D` + Pen_D + `Sc%_D`, 
+         data = total_stats_cleaned)
+summary(m4)
+vif(m4)
+
+```
+
+```{r, include = FALSE}
+m5 <- lm(Win_pct ~ `Y/P` + Cmp + `Pass TD` + 
+           `Rush TD` + `Pen Yds` + `Sc%` + `Total Ply_D` + TO_D + 
+           Cmp_D + `Pass TD_D` +
+           `Rush Att_D` + Pen_D + `Sc%_D`, 
+         data = total_stats_cleaned)
+summary(m5)
+vif(m5)
+
+add_expected_win_pct <- function(df) {
+  # Check that the required variables exist in the new data
+  required_vars <- all(c("Y/P", "Cmp", "Pass TD", "Rush TD", "Pen Yds", "Sc%", 
+                         "Total Ply_D", "TO_D", "Cmp_D", "Pass TD_D", 
+                         "Rush Att_D", "Pen_D", "Sc%_D") %in% colnames(df))
+  
+  if (!required_vars) {
+    stop("Data frame is missing one or more required predictor columns.")
+  }
+  
+  # Predict expected Win % using your fitted model
+  df$Expected_Win_pct <- predict(m5, newdata = df)
+  
+  return(df)
+}
+
+leveragem5 <- hatvalues(m5)
+high_leveragem5 <- 2 * (14/859)
+cdm5 <- cooks.distance(m5)
+model_stdresm5 <- stdres(m5)
+
+# Start from cleaned dataset
+total_stats_m5 <- total_stats
+
+# Add leverage, Cook's D, and standardized residuals
+total_stats_m5$leverage[856:1714] <- round(leveragem5, digits = 6)
+total_stats_m5$CD[856:1714] <- round(cdm5, digits = 6)
+total_stats_m5$StdRes[856:1714] <- round(model_stdresm5, digits = 3)
+
+# Now add the predicted Win %
+total_stats_m5 <- add_expected_win_pct(total_stats_m5)
+total_stats_m5$Expected_Win_pct <- round(total_stats_m5$Expected_Win_pct, digits = 3)
+total_stats_m5$Exp_Wins <- round(total_stats_m5$G * total_stats_m5$Expected_Win_pct, digits = 3)
+total_stats_m5$Win_Diff <- round(total_stats_m5$W - total_stats_m5$Exp_Wins, digits = 3)
+
+total_stats_m5[which(abs(total_stats_m5$StdRes) > 2.5), ]
+total_stats_m5[which(total_stats_m5$Win_Diff > 4 | total_stats_m5$Win_Diff < -4), ]
+plot(m5)
+abline(v = high_leveragem5, lty = 2, col = "blue")
+abline(h = c(-2,2), lty = 2, col = "red")
+```
+
+```{r, include = FALSE}
+# follows AIC
+testing <- total_stats_cleaned
+colnames(testing) <- c("Win_pct", "TotalYds", "TotalPly", "YP", "TO", "FL", "Total1stD", "Cmp", "PassAtt", "PassYds", "PassTD","NYA", "Pass1stD", "RushAtt", "RushTD", "YA", "FirstD", "Pen", "PenYds", "ScPct", "TOPct", "EXP", "TotalYdsD", "TotalPlyD", "TotalYPD", "TOD", "FLD", "Total1stDD", "CmpD", "PassAttD", "PassYdsD", "PassTDD", "NYAD", "Pass1stDD", "RushAttD", "RushTDD", "YAD", "Rush1stDD", "PenD", "PenYdsD", "ScPctD", "TOPctD", "ExpD")
+
+# Getting Rid of NA Values
+testing <- testing[-c(1:916),]
+
+rf_model1 <- randomForest(Win_pct ~ YP + Cmp + PassTD + 
+                 RushTD + PenYds + ScPct + TotalPlyD + TOD + 
+                 CmpD + PassTDD +
+                 RushAttD + PenD + ScPctD, 
+             data = testing)
+rf_model1
+summary(rf_model1)
+importance(rf_model1)
+varImpPlot(rf_model1)
+```
+
+```{r, include = FALSE}
+# Follows BIC
+rf_model2 <- randomForest(Win_pct ~ TO + PassTD + NYA + RushTD + PenYds +
+           ScPct + CmpD + PassAttD + PassTDD + NYAD + 
+           RushAttD + PenD + ScPctD + TOPctD, 
+         data = testing)
+rf_model2
+summary(rf_model2)
+importance(rf_model2)
+varImpPlot(rf_model2)
+```
+
+```{r, include = FALSE}
+rf_model3 <- randomForest(Win_pct ~., 
+         data = testing)
+rf_model3
+summary(rf_model3)
+importance(rf_model3)
+varImpPlot(rf_model3)
+```
+
+```{r, include = FALSE}
+rf_model4 <- randomForest(Win_pct ~ ScPct + RushAttD + ScPctD + NYA + NYAD + TotalYds + TOPctD + TOPct + ExpD + TOD + PassTD + EXP + RushTD + TO + Total1stD + RushAtt, data = testing)
+
+rf_model4
+summary(rf_model4)
+importance(rf_model4)
+varImpPlot(rf_model4)
+```
+
+```{r, include = FALSE}
+
+# Define train control for k-fold cross-validation (e.g., 5 folds)
+train_control <- trainControl(method = "cv", number = 5)
+
+lm_model_reduced <- train(Win_pct ~ TO + PassTD + NYA + RushTD + PenYds +
+              ScPct + CmpD + PassAttD + PassTDD + NYAD + 
+              RushAttD + PenD + ScPctD + TOPctD, 
+          data = testing, 
+                  method = "lm", 
+                  trControl = train_control)
+
+# Train the random forest model with cross-validation
+rf_model <- train(Win_pct ~ ScPct + RushAttD + ScPctD + NYA + NYAD + TotalYds + TOPctD + TOPct + ExpD + TOD + PassTD + EXP + RushTD + TO + Total1stD + RushAtt, data = testing, 
+                  method = "rf", 
+                  trControl = train_control)
+
+```
+
+```{r, include = FALSE}
+# Predict with linear model
+lm_pred <- predict(lm_model_reduced, newdata = testing)
+
+# Predict with random forest model
+rf_pred <- predict(rf_model, newdata = testing)
+
+# Plot predicted vs actual for both models
+par(mfrow = c(1, 2))  # Plot side by side
+
+# Linear model plot
+plot(testing$Win_pct, lm_pred, main = "LM: Predicted vs Actual", xlab = "Actual", ylab = "Predicted")
+abline(0, 1, col = "red")  # Add 45-degree line
+
+# Random forest plot
+plot(testing$Win_pct, rf_pred, main = "RF: Predicted vs Actual", xlab = "Actual", ylab = "Predicted")
+abline(0, 1, col = "red")  # Add 45-degree line
+
+```
+
+```{r, include = FALSE}
+# Train test splitting Lm
+
+# Split your data
+set.seed(123)  # for reproducibility
+split <- createDataPartition(testing$Win_pct, p = 0.75, list = FALSE)
+train_data <- testing[split, ]
+test_data <- testing[-split, ]
+
+# Train a model (example: linear regression)
+lm_model <- train(
+  Win_pct ~ TO + PassTD + NYA + RushTD + PenYds +
+              ScPct + CmpD + PassAttD + PassTDD + NYAD + 
+              RushAttD + PenD + ScPctD + TOPctD, 
+  data = train_data,
+  method = "lm"
+)
+
+# Predict on test set
+predictions <- predict(lm_model, newdata = test_data)
+
+# Evaluate performance
+lm_resample <- postResample(predictions, test_data$Win_pct)
+
+```
+
+```{r, include = FALSE}
+
+# Create a data frame with actual vs predicted
+results_df <- data.frame(
+  Actual = test_data$Win_pct,
+  Predicted = predictions
+)
+
+# Plot
+ggplot(results_df, aes(x = Actual, y = Predicted)) +
+  geom_point(color = "blue", alpha = 0.6) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Actual vs Predicted Win %", x = "Actual Win %", y = "Predicted Win %") +
+  theme_minimal()
+
+```
+
+```{r, include = FALSE}
+# Train test splitting RF
+
+# Split your data
+set.seed(123)  # for reproducibility
+split <- createDataPartition(testing$Win_pct, p = 0.75, list = FALSE)
+train_data <- testing[split, ]
+test_data <- testing[-split, ]
+
+# Train a model (example: linear regression)
+lm_model <- train(
+  Win_pct ~ ScPct + RushAttD + ScPctD + NYA + NYAD + TotalYds + TOPctD + TOPct + ExpD + TOD + PassTD + EXP + RushTD + TO + Total1stD + RushAtt, 
+  data = train_data,
+  method = "lm"
+)
+
+# Predict on test set
+predictions <- predict(lm_model, newdata = test_data)
+
+# Evaluate performance
+rf_resample <- postResample(predictions, test_data$Win_pct)
+```
+
+```{r, include = FALSE}
+# Create a data frame with actual vs predicted
+results_df <- data.frame(
+  Actual = test_data$Win_pct,
+  Predicted = predictions
+)
+
+# Plot
+ggplot(results_df, aes(x = Actual, y = Predicted)) +
+  geom_point(color = "blue", alpha = 0.6) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Actual vs Predicted Win %", x = "Actual Win %", y = "Predicted Win %") +
+  theme_minimal()
+```
+
+## Choice of Model
+
+```{r, echo = FALSE}
+# BIC Model
+summary(m3)
+vif(m3)
+
+rf_model4
+
+lm_model$results
+rf_model$results
+
+cat("Linear Model Results:", lm_resample, "\n")
+cat("Random Forest Results:", rf_resample)
+
+# Plot predicted vs actual for both models
+par(mfrow = c(1, 2))  # Plot side by side
+
+# Linear model plot
+plot(testing$Win_pct, lm_pred, main = "LM: Predicted vs Actual", xlab = "Actual", ylab = "Predicted")
+abline(0, 1, col = "red")  # Add 45-degree line
+
+# Random forest plot
+plot(testing$Win_pct, rf_pred, main = "RF: Predicted vs Actual", xlab = "Actual", ylab = "Predicted")
+abline(0, 1, col = "red")  # Add 45-degree line
+
+
+```
+
+When selecting the best model, I evaluated several diagnostic metrics tailored to each modeling approach. For the linear regression model, I focused on the adjusted $R^2$ to assess model fit while accounting for complexity, p-values to determine the statistical significance of individual predictors, the Mean Squared Error (MSE) of the residuals to gauge prediction accuracy, and Variance Inflation Factors (VIFs) to detect potential multicollinearity.
+
+For the random forest model, I examined the percentage of variance explained as a proxy for goodness of fit, the residual MSE to assess prediction performance, and variable importance scores to identify which predictors contributed most to the model.
+
+## Model Validity
+
+```{r, echo = FALSE}
+leveragem3 <- hatvalues(m3)
+high_leveragem3 <- 2 * (15/859)
+cdm3 <- cooks.distance(m3)
+model_stdresm3 <- stdres(m3)
+
+# Start from cleaned dataset
+total_stats_m3 <- total_stats
+
+# Add leverage, Cook's D, and standardized residuals
+total_stats_m3$leverage[856:1714] <- round(leveragem3, digits = 6)
+total_stats_m3$CD[856:1714] <- round(cdm3, digits = 6)
+total_stats_m3$StdRes[856:1714] <- round(model_stdresm3, digits = 3)
+
+# Now add the predicted Win %
+total_stats_m3 <- add_expected_win_pct(total_stats_m3)
+total_stats_m3$Expected_Win_pct <- round(total_stats_m3$Expected_Win_pct, digits = 3)
+total_stats_m3$Exp_Wins <- round(total_stats_m3$G * total_stats_m3$Expected_Win_pct, digits = 3)
+total_stats_m3$Win_Diff <- round(total_stats_m3$W - total_stats_m3$Exp_Wins, digits = 3)
+
+par(mfrow=c(1,2))
+plot(m3)
+abline(v = high_leveragem3, lty = 2, col = "blue")
+abline(h = c(-2.5,2.5), lty = 2, col = "red")
+```
+
+The residual plot assesses whether the residuals exhibit constant variance. In this case, the red trend line is nearly flat without a noticeable fanning or curvature. This indicates the assumption of constant variance has been met. The Q-Q plot evaluates the normality of the residuals. Since the points closely follow the reference line, the residuals appear to be normally distributed. The scale-location plot checks for homoscedasticity, or equal spread of residuals. The red trend line is mostly flat with no indication of a pattern which supports the assumption of homoscedasticity. The residual vs leverage plot helps to identify influential points, including high leverage outliers and "bad" high leverage points that can disproportionately affect the model and distort the $R^2$ value. Bad high leverage points appear in the top right and bottom left quadrants of the graph. In this model, there are no bad high leverage points but there are outliers that will be further examined.
+
+## Team Outliers
+
+The teams listed below were identified as being outliers based on the criterion of having standardized residuals greater than \$\^+\_-\$2.5 from the model's trend line:
+
+```{r, echo = FALSE}
+outlier_data <- total_stats_m3[which(abs(total_stats_m3$StdRes) > 2.5), ]
+outlier_data$Outcome <- c("L NFCC", "L SB", "L AFCD", "L AFCWC", "4th", "4th", "L NFCWC", "L SB")
+outlier_data[,c(1:5, 61:64)]
+```
+
+Upon examining the outliers, a notable pattern emerged; teams have increasingly tended to over or underperform relative to the model's expectations in recent years. With the model using data from 1998 - 2024, we would expect that there would be one outlier every three years if there are a total of eight. However, there were three of the eight in the last four years.This suggests a potential shift in league dynamics or model limitations.
+
+Additionally, teams that significantly overperformed according to the model did not regress in the postseason. For example, the 15-2 Chiefs were 4.94 wins above expected and still went on to make the Super Bowl. Overperformance may reflect real team strength or factors not captured by the model instead of simple variance or luck.
+
+When reducing the criteria from \$\^+\_-\$ 2.5 standard residuals to 2.25, this trend looks to taper off:
+
+```{r}
+outlier_data <- total_stats_m3[which(abs(total_stats_m3$StdRes) > 2.25), ]
+outlier_data[,c(1:5, 61:63)]
+```
+
+Another interesting observation involves the wins total of these outlier teams. As shown above, teams often finish last in their division or make the playoffs. This aligns with the idea that teams that are farther away from the average amounts of wins for a season (typically 8 wins in a 16-game season or 8.5 in a 17-game season) are more likely to deviate in areas not captured by the model (i.e. special teams, advanced stats, etc).
+
+## Conclusion
+
+This project explored the relationship between NFL team performance metrics and season win percentage through both linear progression and random forest models. By collecting and cleaning over 50 years of NFL data, I was able to construct predictive models that achieve high accuracy and met key statistical assumptions. 
+
+The linear model demonstrated strong explanatory power with an adjusted $R^2$ of .83, while the random forest model captured 77.7% of the variance and highlighted important nonlinear interactions among predictors. Both models offered valuable insights into which team statistics most significantly influence winning outcomes. 
+
+After examining the model's residuals, there were several teams that substantially over or underperformed relative to expectations. In recent seasons, such outliers have become more frequent. This indicates a potential shift in league dynamics, strategy innovations, or model limitations. An important factor to consider is teams that teams who overperformed in the regualr season did not regress in the postseason. This suggests that their success may reflect real strength not fully captured by traditional statistical inputs.
+
+Overall, this analysis illustrates the utility of data-driven modeling in evaluating NFL team performance and identifying patterns in over or underachievement. Future improvements could include integrating advanced stats such as EPA, special teams metrics, or injury data to further enhance predictive power and capture hidden drivers of team success.
+
